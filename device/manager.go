@@ -10,10 +10,13 @@ import (
 	"github.com/lann/tuya/net"
 )
 
+// ErrClosed is return if the Manager has been closed.
 var ErrClosed = errors.New("closed")
 
+// A State holds device state ("dps") data.
 type State map[uint32]interface{}
 
+// Wrap response and error to pass through responseChan.
 type response struct {
 	*net.Response
 	readErr error
@@ -21,6 +24,7 @@ type response struct {
 
 type responseChan chan response
 
+// A Manager handles request/response transactions with a device.
 type Manager struct {
 	devID  string
 	client *net.Client
@@ -31,6 +35,7 @@ type Manager struct {
 	readErr error
 }
 
+// NewManager creates a Manager for the given device ID and already-connected Client.
 func NewManager(deviceID string, client *net.Client) *Manager {
 	m := &Manager{
 		devID:         deviceID,
@@ -41,6 +46,7 @@ func NewManager(deviceID string, client *net.Client) *Manager {
 	return m
 }
 
+// Close closes the Manager.
 func (m *Manager) Close() error {
 	m.Lock()
 	defer m.Unlock()
@@ -55,6 +61,7 @@ func (m *Manager) Close() error {
 	return m.client.Close()
 }
 
+// Start a new goroutine for the client read loop.
 func (m *Manager) start() {
 	go func() {
 		defer m.Close()
@@ -82,6 +89,7 @@ func (m *Manager) start() {
 	}()
 }
 
+// GetState requests the device state.
 func (m *Manager) GetState() (State, error) {
 	var res struct {
 		State State `json:"dps"`
@@ -93,6 +101,7 @@ func (m *Manager) GetState() (State, error) {
 	return res.State, err
 }
 
+// SetState requests update(s) to the device state.
 func (m *Manager) SetState(state State) error {
 	return m.request(0x07, true, map[string]interface{}{
 		"devId": m.devID,
@@ -103,16 +112,21 @@ func (m *Manager) SetState(state State) error {
 	}, nil)
 }
 
+// Manage a request write and a matching blocking response read.
+// The request is sent with the given `cmd` number, `req` payload, and
+// `encrypt` option (see net.Client.Write).
 func (m *Manager) request(cmd uint32, encrypt bool, req, res interface{}) error {
 	if m.readErr != nil {
 		return m.readErr
 	}
 
+	// Write request
 	seq, err := m.client.Write(cmd, encrypt, req)
 	if err != nil {
 		return fmt.Errorf("request Write: %v", err)
 	}
 
+	// Register response channel with request seq number
 	m.Lock()
 	respChan := make(responseChan)
 	m.responseChans[seq] = respChan
@@ -121,13 +135,14 @@ func (m *Manager) request(cmd uint32, encrypt bool, req, res interface{}) error 
 	// Wait for response.
 	// TODO: add timeout (Context?)
 	resp := <-respChan
-
 	if resp.readErr != nil {
 		return fmt.Errorf("response: %v", err)
 	}
 	if res == nil {
 		return resp.Err()
 	}
+
+	// Decode response
 	if err := resp.DecodeJSON(res); err != nil {
 		return fmt.Errorf("response Decode: %v", err)
 	}
